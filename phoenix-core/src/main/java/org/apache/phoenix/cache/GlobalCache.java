@@ -27,7 +27,6 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
@@ -117,13 +116,13 @@ public class GlobalCache extends TenantCacheImpl {
         return result;
     }
 
-    public static GlobalCache getInstance(RegionCoprocessorEnvironment env) {
+    public static GlobalCache getInstance(Configuration configuration) {
         GlobalCache result = INSTANCE;
         if (result == null) {
             synchronized(GlobalCache.class) {
                 result = INSTANCE;
                 if(result == null) {
-                    INSTANCE = result = new GlobalCache(env.getConfiguration());
+                    INSTANCE = result = new GlobalCache(configuration);
                 }
             }
         }
@@ -133,12 +132,12 @@ public class GlobalCache extends TenantCacheImpl {
     /**
      * Get the tenant cache associated with the tenantId. If tenantId is not applicable, null may be
      * used in which case a global tenant cache is returned.
-     * @param env the HBase configuration
+     * @param configuration the HBase configuration
      * @param tenantId the tenant ID or null if not applicable.
      * @return TenantCache
      */
-    public static TenantCache getTenantCache(RegionCoprocessorEnvironment env, ImmutableBytesPtr tenantId) {
-        GlobalCache globalCache = GlobalCache.getInstance(env);
+    public static TenantCache getTenantCache(Configuration configuration, ImmutableBytesPtr tenantId) {
+        GlobalCache globalCache = GlobalCache.getInstance(configuration);
         TenantCache tenantCache = tenantId == null ? globalCache : globalCache.getChildTenantCache(tenantId);      
         return tenantCache;
     }

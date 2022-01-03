@@ -345,7 +345,7 @@ public class NonAggregateRegionScannerFactory extends RegionScannerFactory {
       final OrderedResultIterator iterator, ImmutableBytesPtr tenantId) throws Throwable {
 
     final Tuple firstTuple;
-    TenantCache tenantCache = GlobalCache.getTenantCache(env, tenantId);
+    TenantCache tenantCache = GlobalCache.getTenantCache(env.getConfiguration(), tenantId);
     long estSize = iterator.getEstimatedByteSize();
     final MemoryManager.MemoryChunk chunk = tenantCache.getMemoryManager().allocate(estSize);
     final Region region = getRegion();

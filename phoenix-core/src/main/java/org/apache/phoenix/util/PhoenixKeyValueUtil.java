@@ -219,9 +219,27 @@ public class PhoenixKeyValueUtil {
         if (c instanceof KeyValue) {
             return (KeyValue) c;
         }
-        return KeyValueUtil.copyToNewKeyValue(c);
+        return copyToNewKeyValue(c);
     }
 
+    public static KeyValue copyToNewKeyValue(final Cell cell) {
+        byte[] bytes = copyToNewByteArray(cell);
+        KeyValue kvCell = new KeyValue(bytes, 0, bytes.length);
+        kvCell.setSequenceId(cell.getSequenceId());
+        return kvCell;
+    }
+    public static byte[] copyToNewByteArray(Cell cell) {
+        int v1Length = length(cell);
+        byte[] backingBytes = new byte[v1Length];
+        KeyValueUtil.appendToByteArray(cell, backingBytes, 0, true);
+        return backingBytes;
+    }
+    public static int length(Cell cell) {
+        return length(cell.getRowLength(), cell.getFamilyLength(), cell.getQualifierLength(), cell.getValueLength(), cell.getTagsLength(), true);
+    }
+    public static int length(short rlen, byte flen, int qlen, int vlen, int tlen, boolean withTags) {
+        return withTags ? (int)KeyValue.getKeyValueDataStructureSize(rlen, flen, qlen, vlen, tlen) : (int)KeyValue.getKeyValueDataStructureSize(rlen, flen, qlen, vlen);
+    }
     private static long calculateMultiRowMutationSize(MultiRowMutationState mutations) {
         long size = 0;
         // iterate over rows

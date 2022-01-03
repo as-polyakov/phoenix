@@ -136,7 +136,7 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver im
         }
 
         List<Expression> expressions = deserializeGroupByExpressions(expressionBytes, 0);
-        final TenantCache tenantCache = GlobalCache.getTenantCache(c.getEnvironment(), ScanUtil.getTenantId(scan));
+        final TenantCache tenantCache = GlobalCache.getTenantCache(c.getEnvironment().getConfiguration(), ScanUtil.getTenantId(scan));
         try (MemoryChunk em = tenantCache.getMemoryManager().allocate(0)) {
             ServerAggregators aggregators =
                     ServerAggregators.deserialize(scan
@@ -269,7 +269,7 @@ public class GroupedAggregateRegionObserver extends BaseScannerRegionObserver im
         InMemoryGroupByCache(RegionCoprocessorEnvironment env, ImmutableBytesPtr tenantId, byte[] customAnnotations, ServerAggregators aggregators, int estDistVals) {
             int estValueSize = aggregators.getEstimatedByteSize();
             long estSize = sizeOfUnorderedGroupByMap(estDistVals, estValueSize);
-            TenantCache tenantCache = GlobalCache.getTenantCache(env, tenantId);
+            TenantCache tenantCache = GlobalCache.getTenantCache(env.getConfiguration(), tenantId);
             this.env = env;
             this.estDistVals = estDistVals;
             this.aggregators = aggregators;

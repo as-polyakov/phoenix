@@ -132,7 +132,7 @@ public class SpillableGroupByCache implements GroupByCache {
         this.env = env;
 
         final int estValueSize = aggregators.getEstimatedByteSize();
-        final TenantCache tenantCache = GlobalCache.getTenantCache(env, tenantId);
+        final TenantCache tenantCache = GlobalCache.getTenantCache(env.getConfiguration(), tenantId);
 
         // Compute Map initial map
         final Configuration conf = env.getConfiguration();

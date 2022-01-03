@@ -95,7 +95,7 @@ public class HashJoinCacheIT extends BaseJoinIT {
               final Scan scan) {
             final HashJoinInfo joinInfo = HashJoinInfo.deserializeHashJoinFromScan(scan);
             if (joinInfo != null) {
-                TenantCache cache = GlobalCache.getTenantCache(c.getEnvironment(), null);
+                TenantCache cache = GlobalCache.getTenantCache(c.getEnvironment().getConfiguration(), null);
                 int count = joinInfo.getJoinIds().length;
                 for (int i = 0; i < count; i++) {
                     ImmutableBytesPtr joinId = joinInfo.getJoinIds()[i];

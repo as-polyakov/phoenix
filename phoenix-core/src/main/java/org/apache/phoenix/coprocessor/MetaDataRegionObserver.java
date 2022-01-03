@@ -121,7 +121,7 @@ public class MetaDataRegionObserver implements RegionObserver,RegionCoprocessor 
     public void preClose(final ObserverContext<RegionCoprocessorEnvironment> c,
             boolean abortRequested) {
         executor.shutdownNow();
-        GlobalCache.getInstance(c.getEnvironment()).getMetaDataCache().invalidateAll();
+        GlobalCache.getInstance(c.getEnvironment().getConfiguration()).getMetaDataCache().invalidateAll();
     }
     
     @Override

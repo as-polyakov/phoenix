@@ -565,7 +565,7 @@ public class UngroupedAggregateRegionScanner extends BaseRegionScanner {
         boolean hasMore;
         long startTime = EnvironmentEdgeManager.currentTimeMillis();
         Configuration conf = env.getConfiguration();
-        final TenantCache tenantCache = GlobalCache.getTenantCache(env, ScanUtil.getTenantId(scan));
+        final TenantCache tenantCache = GlobalCache.getTenantCache(env.getConfiguration(), ScanUtil.getTenantId(scan));
         try (MemoryManager.MemoryChunk em = tenantCache.getMemoryManager().allocate(0)) {
             Aggregators aggregators = ServerAggregators.deserialize(
                     scan.getAttribute(BaseScannerRegionObserver.AGGREGATORS), conf, em);

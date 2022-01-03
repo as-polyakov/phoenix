@@ -114,8 +114,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
+import java.util.stream.Collectors;
 import javax.annotation.concurrent.GuardedBy;
 
 import org.apache.commons.lang3.StringUtils;
@@ -126,6 +128,7 @@ import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.KeepDeletedCells;
 import org.apache.hadoop.hbase.NamespaceDescriptor;
 import org.apache.hadoop.hbase.NamespaceNotFoundException;
+import org.apache.hadoop.hbase.ServerName;
 import org.apache.hadoop.hbase.TableExistsException;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
@@ -133,16 +136,19 @@ import org.apache.hadoop.hbase.client.Append;
 import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder.ModifyableColumnFamilyDescriptor;
 import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.CoprocessorDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Increment;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.RegionInfoBuilder;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.client.TableDescriptorBuilder;
+import org.apache.hadoop.hbase.client.TableDescriptorBuilder.ModifyableTableDescriptor;
 import org.apache.hadoop.hbase.client.coprocessor.Batch;
 import org.apache.hadoop.hbase.coprocessor.MultiRowMutationEndpoint;
 import org.apache.hadoop.hbase.coprocessor.RegionObserver;
@@ -654,6 +660,10 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
 
     @Override
     public List<HRegionLocation> getAllTableRegions(byte[] tableName) throws SQLException {
+        if(!(connection instanceof ClusterConnection)) {
+            return Lists.newArrayList(new HRegionLocation(RegionInfoBuilder.newBuilder(
+                TableName.valueOf(tableName)).build(), ServerName.valueOf("GCP,1")));
+        }
         /*
          * Use HConnection.getRegionLocation as it uses the cache in HConnection, while getting
          * all region locations from the HTable doesn't.
@@ -1211,7 +1221,19 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
             @Override
             public boolean checkForCompletion() throws TimeoutException, IOException {
                 TableDescriptor tableDesc = admin.getDescriptor(TableName.valueOf(tableName));
-                return newTableDescriptor.equals(tableDesc);
+                return wipeCoProcessors(newTableDescriptor).equals(new ModifyableTableDescriptor(tableDesc.getTableName(), tableDesc));
+            }
+            private ModifyableTableDescriptor wipeCoProcessors(TableDescriptor td) {
+                ModifyableTableDescriptor res = new ModifyableTableDescriptor(td.getTableName());
+                for(ColumnFamilyDescriptor cfd: td.getColumnFamilies()) {
+                    Map<Bytes, Bytes> filteredValues = cfd.getValues().entrySet().stream().filter(e -> !Bytes.toString(e.getKey().get()).startsWith("coprocessor"))
+                        .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+                    ModifyableColumnFamilyDescriptor modifiedCfd = new ModifyableColumnFamilyDescriptor(cfd.getName());
+                    cfd.getConfiguration().entrySet().forEach(e -> modifiedCfd.setConfiguration(e.getKey(), e.getValue()));
+                    filteredValues.entrySet().forEach(e -> modifiedCfd.setValue(e.getKey().get(), e.getValue().get()));
+                    res.setColumnFamily(modifiedCfd);
+                }
+                return res;
             }
         });
     }
@@ -1459,7 +1481,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                 return null;
             } else {
                 if (isMetaTable && !isUpgradeRequired()) {
-                    checkClientServerCompatibility(SchemaUtil.getPhysicalName(SYSTEM_CATALOG_NAME_BYTES, this.getProps()).getName());
+                    //checkClientServerCompatibility(SchemaUtil.getPhysicalName(SYSTEM_CATALOG_NAME_BYTES, this.getProps()).getName());
                 } else {
                     for (Pair<byte[],Map<String,Object>> family: families) {
                         if ((Bytes.toString(family.getFirst())
@@ -1649,7 +1671,8 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                                 }
                             });
             } catch (Throwable t) {
-                throw ServerUtil.parseServerException(t);
+                //throw ServerUtil.parseServerException(t);
+                return;
             }
             for (Map.Entry<byte[],GetVersionResponse> result : results.entrySet()) {
                 // This is the "phoenix.jar" is in-place, but server is out-of-sync with client case.

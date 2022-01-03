@@ -119,7 +119,7 @@ public class HashJoinRegionScanner implements RegionScanner {
         this.tempTuples = new List[count];
         this.hashCaches = new HashCache[count];
         this.tempSrcBitSet = new ValueBitSet[count];
-        TenantCache cache = GlobalCache.getTenantCache(env, tenantId);
+        TenantCache cache = GlobalCache.getTenantCache(env.getConfiguration(), tenantId);
         for (int i = 0; i < count; i++) {
             ImmutableBytesPtr joinId = joinInfo.getJoinIds()[i];
             if (joinId.getLength() == 0) { // semi-join optimized into skip-scan

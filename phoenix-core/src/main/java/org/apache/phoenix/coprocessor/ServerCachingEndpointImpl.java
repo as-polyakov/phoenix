@@ -67,7 +67,7 @@ public class ServerCachingEndpointImpl extends ServerCachingService implements R
       if (request.hasTenantId()) {
           tenantId = new ImmutableBytesPtr(request.getTenantId().toByteArray());
       }
-      TenantCache tenantCache = GlobalCache.getTenantCache(this.env, tenantId);
+      TenantCache tenantCache = GlobalCache.getTenantCache(this.env.getConfiguration(), tenantId);
       ImmutableBytesWritable cachePtr =
               org.apache.phoenix.protobuf.ProtobufUtil
               .toImmutableBytesWritable(request.getCachePtr());
@@ -98,7 +98,7 @@ public class ServerCachingEndpointImpl extends ServerCachingService implements R
     if (request.hasTenantId()) {
       tenantId = new ImmutableBytesPtr(request.getTenantId().toByteArray());
     }
-    TenantCache tenantCache = GlobalCache.getTenantCache(this.env, tenantId);
+    TenantCache tenantCache = GlobalCache.getTenantCache(this.env.getConfiguration(), tenantId);
     tenantCache.removeServerCache(new ImmutableBytesPtr(request.getCacheId().toByteArray()));
     RemoveServerCacheResponse.Builder responseBuilder = RemoveServerCacheResponse.newBuilder();
     responseBuilder.setReturn(true);

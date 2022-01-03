@@ -91,7 +91,7 @@ public class PhoenixIndexMetaDataBuilder {
         } else {
             byte[] tenantIdBytes = attributes.get(PhoenixRuntime.TENANT_ID_ATTRIB);
             ImmutableBytesPtr tenantId = tenantIdBytes == null ? null : new ImmutableBytesPtr(tenantIdBytes);
-            TenantCache cache = GlobalCache.getTenantCache(env, tenantId);
+            TenantCache cache = GlobalCache.getTenantCache(env.getConfiguration(), tenantId);
             IndexMetaDataCache indexCache = (IndexMetaDataCache)cache.getServerCache(new ImmutableBytesPtr(uuid));
             if (indexCache == null) {
                 String msg = "key=" + ServerCacheClient.idToString(uuid) + " region=" + env.getRegion() + "host="

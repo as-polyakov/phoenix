@@ -49,12 +49,15 @@ import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.JAR_PATH_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.LAST_DDL_TIMESTAMP_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.LINK_TYPE_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.MAX_VALUE_BYTES;
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.MIN_VALUE_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.MIN_PHOENIX_TTL_HWM;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.MIN_VALUE_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.MULTI_TENANT_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.NULLABLE_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.NUM_ARGS_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.ORDINAL_POSITION_BYTES;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.PHOENIX_TTL_BYTES;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.PHOENIX_TTL_HWM_BYTES;
+import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.PHOENIX_TTL_NOT_DEFINED;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.PK_NAME_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.RETURN_TYPE_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.SALT_BUCKETS_BYTES;
@@ -74,9 +77,6 @@ import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.VIEW_CONSTANT_BYTE
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.VIEW_INDEX_ID_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.VIEW_INDEX_ID_DATA_TYPE_BYTES;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.VIEW_STATEMENT_BYTES;
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.PHOENIX_TTL_BYTES;
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.PHOENIX_TTL_HWM_BYTES;
-import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.PHOENIX_TTL_NOT_DEFINED;
 import static org.apache.phoenix.jdbc.PhoenixDatabaseMetaData.VIEW_TYPE_BYTES;
 import static org.apache.phoenix.query.QueryConstants.VIEW_MODIFIED_PROPERTY_TAG_TYPE;
 import static org.apache.phoenix.schema.PTableType.INDEX;
@@ -86,6 +86,11 @@ import static org.apache.phoenix.util.SchemaUtil.getVarChars;
 import static org.apache.phoenix.util.ViewUtil.findAllDescendantViews;
 import static org.apache.phoenix.util.ViewUtil.getSystemTableForChildLinks;
 
+import com.google.cloud.bigtable.hbase2_x.BigtableTable;
+import com.google.protobuf.ByteString;
+import com.google.protobuf.RpcCallback;
+import com.google.protobuf.RpcController;
+import com.google.protobuf.Service;
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
 import java.sql.ResultSetMetaData;
@@ -93,16 +98,18 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NavigableMap;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
-
+import java.util.stream.Collectors;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.ArrayBackedTag;
 import org.apache.hadoop.hbase.Cell;
@@ -119,12 +126,14 @@ import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.Tag;
 import org.apache.hadoop.hbase.TagUtil;
+import org.apache.hadoop.hbase.client.Connection;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.Get;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.RegionInfo;
 import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.ResultScanner;
+import org.apache.hadoop.hbase.client.RowMutations;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.client.Table;
 import org.apache.hadoop.hbase.coprocessor.CoprocessorException;
@@ -190,6 +199,7 @@ import org.apache.phoenix.parse.PFunction;
 import org.apache.phoenix.parse.PFunction.FunctionArgument;
 import org.apache.phoenix.parse.PSchema;
 import org.apache.phoenix.protobuf.ProtobufUtil;
+import org.apache.phoenix.query.BigTableConnectionFactory;
 import org.apache.phoenix.query.ConnectionQueryServices;
 import org.apache.phoenix.query.KeyRange;
 import org.apache.phoenix.query.QueryConstants;
@@ -229,6 +239,9 @@ import org.apache.phoenix.schema.types.PLong;
 import org.apache.phoenix.schema.types.PTinyint;
 import org.apache.phoenix.schema.types.PVarbinary;
 import org.apache.phoenix.schema.types.PVarchar;
+import org.apache.phoenix.thirdparty.com.google.common.cache.Cache;
+import org.apache.phoenix.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.phoenix.thirdparty.com.google.common.collect.Lists;
 import org.apache.phoenix.trace.util.Tracing;
 import org.apache.phoenix.transaction.TransactionFactory;
 import org.apache.phoenix.util.ByteUtil;
@@ -245,14 +258,6 @@ import org.apache.phoenix.util.UpgradeUtil;
 import org.apache.phoenix.util.ViewUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import org.apache.phoenix.thirdparty.com.google.common.cache.Cache;
-import org.apache.phoenix.thirdparty.com.google.common.collect.ImmutableList;
-import org.apache.phoenix.thirdparty.com.google.common.collect.Lists;
-import com.google.protobuf.ByteString;
-import com.google.protobuf.RpcCallback;
-import com.google.protobuf.RpcController;
-import com.google.protobuf.Service;
 
 /**
  * Endpoint co-processor through which all Phoenix metadata mutations flow.
@@ -289,16 +294,16 @@ import com.google.protobuf.Service;
  */
 @SuppressWarnings("deprecation")
 @CoreCoprocessor
-public class MetaDataEndpointImpl extends MetaDataProtocol implements RegionCoprocessor {
-    private static final Logger LOGGER = LoggerFactory.getLogger(MetaDataEndpointImpl.class);
+public class CBTMetaDataEndpointImpl extends MetaDataProtocol implements RegionCoprocessor {
+    private static final Logger LOGGER = LoggerFactory.getLogger(CBTMetaDataEndpointImpl.class);
 
     // Column to track tables that have been upgraded based on PHOENIX-2067
     public static final String ROW_KEY_ORDER_OPTIMIZABLE = "ROW_KEY_ORDER_OPTIMIZABLE";
     public static final byte[] ROW_KEY_ORDER_OPTIMIZABLE_BYTES = Bytes.toBytes(ROW_KEY_ORDER_OPTIMIZABLE);
 
-    private static final byte[] CHILD_TABLE_BYTES = new byte[]{PTable.LinkType.CHILD_TABLE.getSerializedValue()};
+    private static final byte[] CHILD_TABLE_BYTES = new byte[]{LinkType.CHILD_TABLE.getSerializedValue()};
     private static final byte[] PHYSICAL_TABLE_BYTES =
-            new byte[]{PTable.LinkType.PHYSICAL_TABLE.getSerializedValue()};
+            new byte[]{LinkType.PHYSICAL_TABLE.getSerializedValue()};
 
     // KeyValues for Table
     private static final Cell TABLE_TYPE_KV = createFirstOnRow(ByteUtil.EMPTY_BYTE_ARRAY,
@@ -528,6 +533,11 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
     private static final int DEFAULT_VALUE_INDEX = FUNCTION_ARG_KV_COLUMNS.indexOf(DEFAULT_VALUE_KV);
     private static final int MIN_VALUE_INDEX = FUNCTION_ARG_KV_COLUMNS.indexOf(MIN_VALUE_KV);
     private static final int MAX_VALUE_INDEX = FUNCTION_ARG_KV_COLUMNS.indexOf(MAX_VALUE_KV);
+    private final Connection connection;
+
+    public CBTMetaDataEndpointImpl(Connection connection) {
+      this.connection = connection;
+    }
 
     public static PName newPName(byte[] buffer) {
         return buffer == null ? null : newPName(buffer, 0, buffer.length);
@@ -614,7 +624,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         try {
             // TODO: check that key is within region.getStartKey() and region.getEndKey()
             // and return special code to force client to lookup region from meta.
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             MetaDataMutationResult result = checkTableKeyInRegion(key, region);
             if (result != null) {
                 done.run(MetaDataMutationResult.toProto(result));
@@ -631,8 +641,10 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 done.run(builder.build());
                 return;
             }
+            /*
             getCoprocessorHost().preGetTable(Bytes.toString(tenantId), SchemaUtil.getTableName(schemaName, tableName),
                     TableName.valueOf(table.getPhysicalName().getBytes()));
+            */
 
             if (request.getClientVersion() < MIN_SPLITTABLE_SYSTEM_CATALOG
                     && table.getType() == PTableType.VIEW
@@ -682,29 +694,29 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         return phoenixAccessCoprocessorHost;
     }
 
-    private PTable buildTable(byte[] key, ImmutableBytesPtr cacheKey, Region region,
-                              long clientTimeStamp, int clientVersion)
+    private PTable buildTable(byte[] key, ImmutableBytesPtr cacheKey,
+        long clientTimeStamp, int clientVersion)
             throws IOException, SQLException {
         Scan scan = MetaDataUtil.newTableRowsScan(key, MIN_TABLE_TIMESTAMP, clientTimeStamp);
-        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+                BigTableConnectionFactory.getFakeConfiguration())
+            .getMetaDataCache();
         PTable newTable;
-        try (RegionScanner scanner = region.getScanner(scan)) {
-            PTable oldTable = (PTable) metaDataCache.getIfPresent(cacheKey);
-            long tableTimeStamp = oldTable == null ? MIN_TABLE_TIMESTAMP - 1 : oldTable.getTimeStamp();
-            newTable = getTable(scanner, clientTimeStamp, tableTimeStamp, clientVersion);
-            if (newTable != null
-                    && (oldTable == null || tableTimeStamp < newTable.getTimeStamp()
-                    || (blockWriteRebuildIndex && newTable.getIndexDisableTimestamp() > 0))) {
-                if (LOGGER.isDebugEnabled()) {
-                    LOGGER.debug("Caching table "
-                            + Bytes.toStringBinary(cacheKey.get(), cacheKey.getOffset(),
-                            cacheKey.getLength())
-                            + " at seqNum " + newTable.getSequenceNumber()
-                            + " with newer timestamp " + newTable.getTimeStamp() + " versus "
-                            + tableTimeStamp);
-                }
-                metaDataCache.put(cacheKey, newTable);
-            }
+        PTable oldTable = (PTable) metaDataCache.getIfPresent(cacheKey);
+        long tableTimeStamp = oldTable == null ? MIN_TABLE_TIMESTAMP - 1 : oldTable.getTimeStamp();
+        newTable = getTable(scan, clientTimeStamp, tableTimeStamp, clientVersion);
+        if (newTable != null
+            && (oldTable == null || tableTimeStamp < newTable.getTimeStamp()
+            || (blockWriteRebuildIndex && newTable.getIndexDisableTimestamp() > 0))) {
+          if (LOGGER.isDebugEnabled()) {
+            LOGGER.debug("Caching table "
+                + Bytes.toStringBinary(cacheKey.get(), cacheKey.getOffset(),
+                cacheKey.getLength())
+                + " at seqNum " + newTable.getSequenceNumber()
+                + " with newer timestamp " + newTable.getTimeStamp() + " versus "
+                + tableTimeStamp);
+          }
+          metaDataCache.put(cacheKey, newTable);
         }
         return newTable;
     }
@@ -722,7 +734,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         ScanRanges scanRanges = ScanRanges.createPointLookup(keyRanges);
         scanRanges.initializeScan(scan);
         scan.setFilter(scanRanges.getSkipScanFilter());
-        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+            BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
         List<PFunction> functions = new ArrayList<PFunction>();
         PFunction function = null;
         try (RegionScanner scanner = region.getScanner(scan)) {
@@ -763,7 +776,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         ScanRanges scanRanges = ScanRanges.createPointLookup(keyRanges);
         scanRanges.initializeScan(scan);
         scan.setFilter(scanRanges.getSkipScanFilter());
-        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+            BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
         List<PSchema> schemas = new ArrayList<PSchema>();
         PSchema schema = null;
         try (RegionScanner scanner = region.getScanner(scan)) {
@@ -906,6 +920,10 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 Arrays.copyOfRange(columnQualifierKV.getValueArray(),
                         columnQualifierKV.getValueOffset(), columnQualifierKV.getValueOffset()
                                 + columnQualifierKV.getValueLength()) : (isPkColumn ? null : colName.getBytes());
+        /*
+        if(!isPkColumn && columnQualifierKV == null)
+            throw new IllegalStateException("Column is not a PK and its qualifier is written as null, it will be set to its name and it will break everything later!!!!!");
+        */
         PColumn column =
                 new PColumnImpl(colName, famName, dataType, maxLength, scale, isNullable,
                         position - 1, sortOrder, arraySize, viewConstant, isViewReferenced,
@@ -969,11 +987,12 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         arguments.add(arg);
     }
 
-    private PTable getTable(RegionScanner scanner, long clientTimeStamp, long tableTimeStamp,
+    private PTable getTable(Scan scan, long clientTimeStamp, long tableTimeStamp,
                             int clientVersion)
             throws IOException, SQLException {
         List<Cell> results = Lists.newArrayList();
-        scanner.next(results);
+        ResultScanner resultScanner = getSystemCatalogScanner(scan);
+        results = readAllCellsAndMoveToNext(resultScanner);
         if (results.isEmpty()) {
             return null;
         }
@@ -1199,20 +1218,35 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         PName parentTableName = tableType == INDEX ? dataTableName : null;
         PName parentSchemaName = tableType == INDEX ? schemaName : null;
         EncodedCQCounter cqCounter =
-                (!EncodedColumnsUtil.usesEncodedColumnNames(encodingScheme) || tableType == PTableType.VIEW) ? PTable.EncodedCQCounter.NULL_COUNTER
+                (!EncodedColumnsUtil.usesEncodedColumnNames(encodingScheme) || tableType == PTableType.VIEW) ? EncodedCQCounter.NULL_COUNTER
                         : new EncodedCQCounter();
         boolean isRegularView = (tableType == PTableType.VIEW && viewType != ViewType.MAPPED);
         while (true) {
             results.clear();
-            scanner.next(results);
-            if (results.isEmpty()) {
+            Result nextResult = resultScanner.next();
+            if (nextResult == null) {
                 break;
             }
+            results.addAll(nextResult.listCells());
+
             Cell colKv = results.get(LINK_TYPE_INDEX);
             int colKeyLength = colKv.getRowLength();
             PName colName = newPName(colKv.getRowArray(), colKv.getRowOffset() + offset, colKeyLength - offset);
             int colKeyOffset = offset + colName.getBytes().length + 1;
             PName famName = newPName(colKv.getRowArray(), colKv.getRowOffset() + colKeyOffset, colKeyLength - colKeyOffset);
+            /*
+            Cell colKv = results.get(LINK_TYPE_INDEX);
+
+            //PName colName = newPName(colKv.getQualifierArray(), colKv.getQualifierOffset(), colKv.getQualifierLength());
+
+
+            int colKeyLength = colKv.getRowLength();
+            PName colName = newPName(colKv.getRowArray(), colKv.getRowOffset() + offset, colKeyLength - offset);
+            if(colName == null)
+                continue;
+            //int colKeyOffset = offset + (colName != null ? colName.getBytes().length : 0 )+ 1;
+            PName famName = newPName(colKv.getFamilyArray(), colKv.getFamilyOffset(), colKv.getFamilyLength());
+            */
             if (isQualifierCounterKV(colKv)) {
                 Integer value = PInteger.INSTANCE.getCodec().decodeInt(colKv.getValueArray(), colKv.getValueOffset(), SortOrder.ASC);
                 cqCounter.setValue(famName.getString(), value);
@@ -1284,6 +1318,18 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 .setIsChangeDetectionEnabled(isChangeDetectionEnabled)
                 .setColumns(columns)
                 .build();
+    }
+
+    private List<Cell> readAllCellsAndMoveToNext(ResultScanner resultScanner) throws IOException {
+        List<Cell> results;
+        Result r = resultScanner.next();
+        results= (r != null ? r.listCells(): new ArrayList<>());
+        return new ArrayList<>(results);
+    }
+    private ResultScanner getSystemCatalogScanner(Scan scan) throws IOException {
+        ResultScanner resultScanner = connection.getTable(TableName.valueOf("SYSTEM.CATALOG")).getScanner(
+            scan);
+        return resultScanner;
     }
 
     private Long getViewIndexId(Cell[] tableKeyValues, PDataType viewIndexIdType) {
@@ -1484,8 +1530,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 className.getString(), jarPath == null ? null : jarPath.getString(), timeStamp);
     }
 
-    private PTable buildDeletedTable(byte[] key, ImmutableBytesPtr cacheKey, Region region,
-                                     long clientTimeStamp) throws IOException {
+    private PTable buildDeletedTable(byte[] key, ImmutableBytesPtr cacheKey,
+        long clientTimeStamp) throws IOException {
         if (clientTimeStamp == HConstants.LATEST_TIMESTAMP) {
             return null;
         }
@@ -1493,15 +1539,17 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         Scan scan = MetaDataUtil.newTableRowsScan(key, clientTimeStamp, HConstants.LATEST_TIMESTAMP);
         scan.setFilter(new FirstKeyOnlyFilter());
         scan.setRaw(true);
-        List<Cell> results = Lists.<Cell>newArrayList();
+        List<Cell> results = readAllCellsAndMoveToNext(getSystemCatalogScanner(scan));
+        /*
         try (RegionScanner scanner = region.getScanner(scan)) {
             scanner.next(results);
         }
+        */
         for (Cell kv : results) {
-            KeyValue.Type type = Type.codeToType(kv.getTypeByte());
+            Type type = Type.codeToType(kv.getTypeByte());
             if (type == Type.DeleteFamily) { // Row was deleted
                 Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache =
-                        GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                        GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
                 PTable table = newDeletedTableMarker(kv.getTimestamp());
                 metaDataCache.put(cacheKey, table);
                 return table;
@@ -1529,7 +1577,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             Cell kv = results.get(0);
             if (kv.getTypeByte() == Type.Delete.getCode()) {
                 Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache =
-                        GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                        GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
                 PFunction function = newDeletedFunctionMarker(kv.getTimestamp());
                 metaDataCache.put(cacheKey, function);
                 return function;
@@ -1555,7 +1603,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         if (!results.isEmpty() && results.get(0).getTimestamp() > clientTimeStamp) {
             Cell kv = results.get(0);
             if (kv.getTypeByte() == Type.Delete.getCode()) {
-                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration())
+                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+                        BigTableConnectionFactory.getFakeConfiguration())
                         .getMetaDataCache();
                 PSchema schema = newDeletedSchemaMarker(kv.getTimestamp());
                 metaDataCache.put(cacheKey, schema);
@@ -1606,16 +1655,15 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
     private PTable loadTable(RegionCoprocessorEnvironment env, byte[] key,
                              ImmutableBytesPtr cacheKey, long clientTimeStamp, long asOfTimeStamp, int clientVersion)
             throws IOException, SQLException {
-        Region region = env.getRegion();
         PTable table = getTableFromCache(cacheKey, clientTimeStamp, clientVersion);
         // We always cache the latest version - fault in if not in cache
-        if (table != null || (table = buildTable(key, cacheKey, region, asOfTimeStamp, clientVersion)) != null) {
+        if (table != null || (table = buildTable(key, cacheKey, asOfTimeStamp, clientVersion)) != null) {
             return table;
         }
         // if not found then check if newer table already exists and add delete marker for timestamp
         // found
         if (table == null
-                && (table = buildDeletedTable(key, cacheKey, region, clientTimeStamp)) != null) {
+                && (table = buildDeletedTable(key, cacheKey, clientTimeStamp)) != null) {
             return table;
         }
         return null;
@@ -1625,7 +1673,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
      * Returns a PTable if its found in the cache.
      */
     private PTable getTableFromCache(ImmutableBytesPtr cacheKey, long clientTimeStamp, int clientVersion) {
-        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+            BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
         PTable table = (PTable) metaDataCache.getIfPresent(cacheKey);
         return table;
     }
@@ -1633,8 +1682,9 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
     private PFunction loadFunction(RegionCoprocessorEnvironment env, byte[] key,
                                    ImmutableBytesPtr cacheKey, long clientTimeStamp, long asOfTimeStamp, boolean isReplace, List<Mutation> deleteMutationsForReplace)
             throws IOException, SQLException {
-        Region region = env.getRegion();
-        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+        Region region = BigTableConnectionFactory.getFakeRegion();
+        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+            BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
         PFunction function = (PFunction) metaDataCache.getIfPresent(cacheKey);
         // We always cache the latest version - fault in if not in cache
         if (function != null && !isReplace) {
@@ -1655,8 +1705,9 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
 
     private PSchema loadSchema(RegionCoprocessorEnvironment env, byte[] key, ImmutableBytesPtr cacheKey,
                                long clientTimeStamp, long asOfTimeStamp) throws IOException, SQLException {
-        Region region = env.getRegion();
-        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+        Region region = BigTableConnectionFactory.getFakeRegion();
+        Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+            BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
         PSchema schema = (PSchema) metaDataCache.getIfPresent(cacheKey);
         // We always cache the latest version - fault in if not in cache
         if (schema != null) {
@@ -1801,9 +1852,12 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             // upgraded, we disallow dropping a base table that has child views, so in that case
             // this is a no-op (See PHOENIX-5544)
             if (!Bytes.toString(schemaName).equals(QueryConstants.SYSTEM_SCHEMA_NAME)) {
+
+                /*
                 ViewUtil.dropChildViews(env, tenantIdBytes, schemaName, tableName,
                         getSystemTableForChildLinks(clientVersion, env.getConfiguration())
                                 .getName());
+                */
             }
 
             byte[] parentTableKey = null;
@@ -1897,14 +1951,18 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 }
             }
 
+            /*
             getCoprocessorHost().preCreateTable(Bytes.toString(tenantIdBytes),
                     fullTableName,
                     (tableType == PTableType.VIEW) ? null : TableName.valueOf(cPhysicalName),
                     cParentPhysicalName == null ? null : TableName.valueOf(cParentPhysicalName), tableType,
-                    /* TODO: During inital create we may not need the family map */
-                    Collections.<byte[]>emptySet(), indexes);
+                                */
+/* TODO: During inital create we may not need the family map */            /*
 
-            Region region = env.getRegion();
+                    Collections.<byte[]>emptySet(), indexes);
+            */
+
+            Region region = BigTableConnectionFactory.getFakeRegion();
             List<RowLock> locks = Lists.newArrayList();
             // Place a lock using key for the table to be created
             try {
@@ -2148,7 +2206,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
 
                 // Invalidate the cache - the next getTable call will add it
                 // TODO: consider loading the table that was just created here, patching up the parent table, and updating the cache
-                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+                    BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
                 if (parentTableKey != null) {
                     metaDataCache.invalidate(new ImmutableBytesPtr(parentTableKey));
                 }
@@ -2163,7 +2222,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 builder.setMutationTime(currentTimeStamp);
                 //send the newly built table back because we generated the DDL timestamp server
                 // side and the client doesn't have it.
-                PTable newTable = buildTable(tableKey, cacheKey, region,
+                PTable newTable = buildTable(tableKey, cacheKey,
                     clientTimeStamp, clientVersion);
                 if (newTable != null) {
                     builder.setTable(PTableImpl.toProto(newTable));
@@ -2212,6 +2271,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
 
     private void separateLocalAndRemoteMutations(Region region, List<Mutation> mutations,
                                                  List<Mutation> localMutations, List<Mutation> remoteMutations) {
+        /*
         RegionInfo regionInfo = region.getRegionInfo();
         for (Mutation mutation : mutations) {
             if (regionInfo.containsRow(mutation.getRow())) {
@@ -2220,6 +2280,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 remoteMutations.add(mutation);
             }
         }
+        */
+        localMutations.addAll(mutations);
     }
 
     @Override
@@ -2253,7 +2315,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             List<SharedTableState> sharedTablesToDelete = Lists.newArrayList();
 
             byte[] lockKey = SchemaUtil.getTableKey(tenantIdBytes, schemaName, tableOrViewName);
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             MetaDataMutationResult result = checkTableKeyInRegion(lockKey, region);
             if (result != null) {
                 done.run(MetaDataMutationResult.toProto(result));
@@ -2380,7 +2442,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                     return;
                 }
                 Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache =
-                        GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                        GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
 
                 List<Mutation> localMutations =
                         Lists.newArrayListWithExpectedSize(tableMetadata.size());
@@ -2444,11 +2506,11 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
     private static class StatsDeleteHandler implements Runnable {
         PTable deletedTable;
         List<byte[]> physicalTableNames;
-        List<MetaDataProtocol.SharedTableState> sharedTableStates;
+        List<SharedTableState> sharedTableStates;
         RegionCoprocessorEnvironment env;
 
         StatsDeleteHandler(RegionCoprocessorEnvironment env, PTable deletedTable, List<byte[]> physicalTableNames,
-                          List<MetaDataProtocol.SharedTableState> sharedTableStates) {
+                          List<SharedTableState> sharedTableStates) {
             this.deletedTable = deletedTable;
             this.physicalTableNames = physicalTableNames;
             this.sharedTableStates = sharedTableStates;
@@ -2487,13 +2549,22 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
     }
 
     private RowLock acquireLock(Region region, byte[] lockKey, List<RowLock> locks) throws IOException {
+        RowLock rowLock = new RowLock() {
+            @Override
+            public void release() {
+
+            }
+        };
+        /*
         RowLock rowLock = region.getRowLock(lockKey, false);
         if (rowLock == null) {
             throw new IOException("Failed to acquire lock on " + Bytes.toStringBinary(lockKey));
         }
+        */
         if (locks != null) {
             locks.add(rowLock);
         }
+
         return rowLock;
     }
 
@@ -2523,14 +2594,14 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             List<SharedTableState> sharedTablesToDelete, int clientVersion)
             throws IOException, SQLException {
 
-        Region region = env.getRegion();
+        Region region = BigTableConnectionFactory.getFakeRegion();
         long clientTimeStamp = MetaDataUtil.getClientTimeStamp(catalogMutations);
         ImmutableBytesPtr cacheKey = new ImmutableBytesPtr(key);
 
         PTable table = getTableFromCache(cacheKey, clientTimeStamp, clientVersion);
 
         // We always cache the latest version - fault in if not in cache
-        if (table != null || (table = buildTable(key, cacheKey, region, HConstants.LATEST_TIMESTAMP,
+        if (table != null || (table = buildTable(key, cacheKey, HConstants.LATEST_TIMESTAMP,
                 clientVersion)) != null) {
             if (table.getTimeStamp() < clientTimeStamp) {
                 if (isTableDeleted(table) || tableType != table.getType()) {
@@ -2545,7 +2616,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         // We didn't find a table at the latest timestamp, so either there is no table or
         // there was a table, but it's been deleted. In either case we want to return.
         if (table == null) {
-            if (buildDeletedTable(key, cacheKey, region, clientTimeStamp) != null) {
+            if (buildDeletedTable(key, cacheKey, clientTimeStamp) != null) {
                 return new MetaDataMutationResult(MutationCode.NEWER_TABLE_FOUND,
                         EnvironmentEdgeManager.currentTimeMillis(), null);
             }
@@ -2720,14 +2791,14 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         if (!isMutationAllowed) {
             MetaDataMutationResult metaDataMutationResult =
                 new MetaDataMutationResult(
-                    MetaDataProtocol.MutationCode.UNALLOWED_TABLE_MUTATION,
+                    MutationCode.UNALLOWED_TABLE_MUTATION,
                     EnvironmentEdgeManager.currentTimeMillis(), null);
             return Optional.of(metaDataMutationResult);
         }
         if (!isSchemaMutationAllowed) {
             MetaDataMutationResult metaDataMutationResult =
                     new MetaDataMutationResult(
-                            MetaDataProtocol.MutationCode.UNALLOWED_SCHEMA_MUTATION,
+                            MutationCode.UNALLOWED_SCHEMA_MUTATION,
                             EnvironmentEdgeManager.currentTimeMillis(), null);
             return Optional.of(metaDataMutationResult);
         }
@@ -2752,7 +2823,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         List<SharedTableState> sharedTablesToDelete = Lists.newArrayList();
         long clientTimeStamp = MetaDataUtil.getClientTimeStamp(tableMetadata);
         try {
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             MetaDataMutationResult result = checkTableKeyInRegion(key, region);
             if (result != null) {
                 return result;
@@ -2786,11 +2857,11 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                     }
                 }
                 // Get client timeStamp from mutations
-                if (table == null && (table = buildTable(key, cacheKey, region,
-                        HConstants.LATEST_TIMESTAMP, clientVersion)) == null) {
+                if (table == null && (table = buildTable(key, cacheKey,
+                    HConstants.LATEST_TIMESTAMP, clientVersion)) == null) {
                     // if not found then call newerTableExists and add delete marker for timestamp
                     // found
-                    table = buildDeletedTable(key, cacheKey, region, clientTimeStamp);
+                    table = buildDeletedTable(key, cacheKey, clientTimeStamp);
                     if (table != null) {
                         LOGGER.info("Found newer table deleted as of " + table.getTimeStamp()
                                 + " versus client timestamp of " + clientTimeStamp);
@@ -2905,7 +2976,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 }
 
                 Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache =
-                        GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                        GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
 
                 // The mutations to add a column are written in the following order:
                 // 1. Update the encoded column qualifier for the parent table if its on a
@@ -2963,7 +3034,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                         && result.getMutationCode() != MutationCode.TABLE_ALREADY_EXISTS) {
                     return result;
                 } else {
-                    table = buildTable(key, cacheKey, region, HConstants.LATEST_TIMESTAMP,
+                    table = buildTable(key, cacheKey, HConstants.LATEST_TIMESTAMP,
                             clientVersion);
                     if (clientVersion < MIN_SPLITTABLE_SYSTEM_CATALOG && type == PTableType.VIEW) {
                         try (PhoenixConnection connection = QueryUtil.getConnectionOnServer(
@@ -3119,10 +3190,10 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
      */
     private PTable doGetTable(byte[] tenantId, byte[] schemaName, byte[] tableName,
                               long clientTimeStamp, RowLock rowLock, int clientVersion) throws IOException, SQLException {
-        Region region = env.getRegion();
+        Region region = BigTableConnectionFactory.getFakeRegion();
         final byte[] key = SchemaUtil.getTableKey(tenantId, schemaName, tableName);
         // if this region doesn't contain the metadata rows then fail
-        if (!region.getRegionInfo().containsRow(key)) {
+        if (region != null && !region.getRegionInfo().containsRow(key)) {
             throw new SQLExceptionInfo.Builder(SQLExceptionCode.GET_TABLE_ERROR)
                     .setSchemaName(Bytes.toString(schemaName))
                     .setTableName(Bytes.toString(tableName)).build().buildException();
@@ -3160,14 +3231,14 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             }
             // Query for the latest table first, since it's not cached
             table =
-                    buildTable(key, cacheKey, region, HConstants.LATEST_TIMESTAMP, clientVersion);
+                    buildTable(key, cacheKey, HConstants.LATEST_TIMESTAMP, clientVersion);
             if ((table != null && table.getTimeStamp() <= clientTimeStamp) ||
                     (blockWriteRebuildIndex && table.getIndexDisableTimestamp() > 0)) {
                 return table;
             }
             // Otherwise, query for an older version of the table - it won't be cached
             table =
-                    buildTable(key, cacheKey, region, clientTimeStamp, clientVersion);
+                    buildTable(key, cacheKey, clientTimeStamp, clientVersion);
             return table;
         } finally {
             if (!wasLocked && rowLock != null) rowLock.release();
@@ -3176,8 +3247,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
 
     private List<PFunction> doGetFunctions(List<byte[]> keys, long clientTimeStamp) throws IOException, SQLException {
         Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache =
-                GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
-        Region region = env.getRegion();
+                GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
+        Region region = BigTableConnectionFactory.getFakeRegion();
         Collections.sort(keys, new Comparator<byte[]>() {
             @Override
             public int compare(byte[] o1, byte[] o2) {
@@ -3255,7 +3326,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         // Look for columnToDelete in any indexes. If found as PK column, get lock and drop the
         // index and then invalidate it
         // Covered columns are deleted from the index by the client
-        Region region = env.getRegion();
+        Region region = BigTableConnectionFactory.getFakeRegion();
         PhoenixConnection connection =
                 table.getIndexes().isEmpty() ? null : QueryUtil.getConnectionOnServer(
                         env.getConfiguration()).unwrap(PhoenixConnection.class);
@@ -3398,9 +3469,9 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
     @Override
     public void clearCache(RpcController controller, ClearCacheRequest request,
                            RpcCallback<ClearCacheResponse> done) {
-        GlobalCache cache = GlobalCache.getInstance(this.env.getConfiguration());
+        GlobalCache cache = GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration());
         Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache =
-                GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
         metaDataCache.invalidateAll();
         long unfreedBytes = cache.clearTenantCache();
         ClearCacheResponse.Builder builder = ClearCacheResponse.newBuilder();
@@ -3435,7 +3506,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             boolean isErrorSwallowed = false;
             if (t instanceof SQLException &&
                     ((SQLException) t).getErrorCode() == SQLExceptionCode.GET_TABLE_ERROR.getErrorCode()) {
-                Region region = env.getRegion();
+                Region region = BigTableConnectionFactory.getFakeRegion();
                 final byte[] key = SchemaUtil.getTableKey(
                         ByteUtil.EMPTY_BYTE_ARRAY,
                         PhoenixDatabaseMetaData.SYSTEM_CATALOG_SCHEMA_BYTES,
@@ -3478,7 +3549,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             schemaName = rowKeyMetaData[PhoenixDatabaseMetaData.SCHEMA_NAME_INDEX];
             tableName = rowKeyMetaData[PhoenixDatabaseMetaData.TABLE_NAME_INDEX];
             final byte[] key = SchemaUtil.getTableKey(tenantId, schemaName, tableName);
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             MetaDataMutationResult result = checkTableKeyInRegion(key, region);
             if (result != null) {
                 done.run(MetaDataMutationResult.toProto(result));
@@ -3701,7 +3772,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                         HConstants.NO_NONCE, HConstants.NO_NONCE);
                     // Invalidate from cache
                     Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache =
-                            GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                            GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
                     metaDataCache.invalidate(cacheKey);
                     if (dataTableKey != null) {
                         metaDataCache.invalidate(new ImmutableBytesPtr(dataTableKey));
@@ -3733,7 +3804,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
     }
 
     private static MetaDataMutationResult checkKeyInRegion(byte[] key, Region region, MutationCode code) {
-        return ServerUtil.isKeyInRegion(key, region) ? null :
+        return true || ServerUtil.isKeyInRegion(key, region) ? null :
                 new MetaDataMutationResult(code, EnvironmentEdgeManager.currentTimeMillis(), null);
     }
 
@@ -3791,7 +3862,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             byte[] key = SchemaUtil.getTableKey(tenantId, schemaName, tableName);
             ImmutableBytesPtr cacheKey = new ImmutableBytesPtr(key);
             Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache =
-                    GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                    GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
             metaDataCache.invalidate(cacheKey);
         } catch (Throwable t) {
             LOGGER.error("clearTableFromCache failed", t);
@@ -3803,7 +3874,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
     @Override
     public void getSchema(RpcController controller, GetSchemaRequest request, RpcCallback<MetaDataResponse> done) {
         MetaDataResponse.Builder builder = MetaDataResponse.newBuilder();
-        Region region = env.getRegion();
+        Region region = BigTableConnectionFactory.getFakeRegion();
         String schemaName = request.getSchemaName();
         byte[] lockKey = SchemaUtil.getSchemaKey(schemaName);
         MetaDataMutationResult result = checkSchemaKeyInRegion(lockKey, region);
@@ -3856,7 +3927,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         byte[] tenantId = request.getTenantId().toByteArray();
         List<String> functionNames = new ArrayList<>(request.getFunctionNamesCount());
         try {
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             List<ByteString> functionNamesList = request.getFunctionNamesList();
             List<Long> functionTimestampsList = request.getFunctionTimestampsList();
             List<byte[]> keys = new ArrayList<byte[]>(request.getFunctionNamesCount());
@@ -3910,7 +3981,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             byte[] tenantIdBytes = rowKeyMetaData[PhoenixDatabaseMetaData.TENANT_ID_INDEX];
             functionName = rowKeyMetaData[PhoenixDatabaseMetaData.FUNTION_NAME_INDEX];
             byte[] lockKey = SchemaUtil.getFunctionKey(tenantIdBytes, functionName);
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             MetaDataMutationResult result = checkFunctionKeyInRegion(lockKey, region);
             if (result != null) {
                 done.run(MetaDataMutationResult.toProto(result));
@@ -3954,7 +4025,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
 
                 // Invalidate the cache - the next getFunction call will add it
                 // TODO: consider loading the function that was just created here, patching up the parent function, and updating the cache
-                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+                    BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
                 metaDataCache.invalidate(cacheKey);
                 // Get timeStamp from mutations - the above method sets it if it's unset
                 long currentTimeStamp = MetaDataUtil.getClientTimeStamp(functionMetaData);
@@ -3983,7 +4055,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             byte[] tenantIdBytes = rowKeyMetaData[PhoenixDatabaseMetaData.TENANT_ID_INDEX];
             functionName = rowKeyMetaData[PhoenixDatabaseMetaData.FUNTION_NAME_INDEX];
             byte[] lockKey = SchemaUtil.getFunctionKey(tenantIdBytes, functionName);
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             MetaDataMutationResult result = checkFunctionKeyInRegion(lockKey, region);
             if (result != null) {
                 done.run(MetaDataMutationResult.toProto(result));
@@ -4005,7 +4077,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 mutateRowsWithLocks(this.accessCheckEnabled, region, functionMetaData, Collections.<byte[]>emptySet(),
                     HConstants.NO_NONCE, HConstants.NO_NONCE);
 
-                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+                    BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
                 long currentTime = MetaDataUtil.getClientTimeStamp(functionMetaData);
                 for (ImmutableBytesPtr ptr : invalidateList) {
                     metaDataCache.invalidate(ptr);
@@ -4047,7 +4120,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                             EnvironmentEdgeManager.currentTimeMillis(), null);
                 }
                 invalidateList.add(new FunctionBytesPtr(keys.get(0)));
-                Region region = env.getRegion();
+                Region region = BigTableConnectionFactory.getFakeRegion();
                 Scan scan = MetaDataUtil.newTableRowsScan(keys.get(0), MIN_TABLE_TIMESTAMP, clientTimeStamp);
                 List<Cell> results = Lists.newArrayList();
                 try (RegionScanner scanner = region.getScanner(scan);) {
@@ -4082,7 +4155,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             Mutation m = MetaDataUtil.getPutOnlyTableHeaderRow(schemaMutations);
 
             byte[] lockKey = m.getRow();
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             MetaDataMutationResult result = checkSchemaKeyInRegion(lockKey, region);
             if (result != null) {
                 done.run(MetaDataMutationResult.toProto(result));
@@ -4118,7 +4191,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
 
                 // Invalidate the cache - the next getSchema call will add it
                 Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache =
-                        GlobalCache.getInstance(this.env.getConfiguration()).getMetaDataCache();
+                        GlobalCache.getInstance(BigTableConnectionFactory.getFakeConfiguration()).getMetaDataCache();
                 if (cacheKey != null) {
                     metaDataCache.invalidate(cacheKey);
                 }
@@ -4147,7 +4220,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
             schemaName = request.getSchemaName();
             getCoprocessorHost().preDropSchema(schemaName);
             byte[] lockKey = SchemaUtil.getSchemaKey(schemaName);
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             MetaDataMutationResult result = checkSchemaKeyInRegion(lockKey, region);
             if (result != null) {
                 done.run(MetaDataMutationResult.toProto(result));
@@ -4165,7 +4238,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 }
                 mutateRowsWithLocks(this.accessCheckEnabled, region, schemaMetaData, Collections.<byte[]>emptySet(),
                     HConstants.NO_NONCE, HConstants.NO_NONCE);
-                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(this.env.getConfiguration())
+                Cache<ImmutableBytesPtr, PMetaDataEntity> metaDataCache = GlobalCache.getInstance(
+                        BigTableConnectionFactory.getFakeConfiguration())
                         .getMetaDataCache();
                 long currentTime = MetaDataUtil.getClientTimeStamp(schemaMetaData);
                 for (ImmutableBytesPtr ptr : invalidateList) {
@@ -4192,7 +4266,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                     EnvironmentEdgeManager.currentTimeMillis(), null);
         }
         if (schema.getTimeStamp() < clientTimeStamp) {
-            Region region = env.getRegion();
+            Region region = BigTableConnectionFactory.getFakeRegion();
             Scan scan = MetaDataUtil.newTableRowsScan(SchemaUtil.getKeyForSchema(null, schemaName), MIN_TABLE_TIMESTAMP,
                     clientTimeStamp);
             List<Cell> results = Lists.newArrayList();
@@ -4237,9 +4311,9 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
      * @param nonce Optional nonce of the operation
      * @throws IOException
      */
-    static void mutateRowsWithLocks(final boolean accessCheckEnabled, final Region region,
-            final List<Mutation> mutations, final Set<byte[]> rowsToLock, final long nonceGroup,
-            final long nonce) throws IOException {
+    void mutateRowsWithLocks(final boolean accessCheckEnabled, final Region region,
+        final List<Mutation> mutations, final Set<byte[]> rowsToLock, final long nonceGroup,
+        final long nonce) throws IOException {
         // We need to mutate SYSTEM.CATALOG or SYSTEM.CHILD_LINK with HBase/login user
         // if access is enabled.
         if (accessCheckEnabled) {
@@ -4250,7 +4324,8 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                     // Setting RPC context as null so that user can be resetted
                     try {
                         RpcUtil.setRpcContext(null);
-                        region.mutateRowsWithLocks(mutations, rowsToLock, nonceGroup, nonce);
+                        //region.mutateRowsWithLocks(mutations, rowsToLock, nonceGroup, nonce);
+                        CBTMetaDataEndpointImpl.this.mutateRowsOnSystemCatalog(mutations);
                     } catch (Throwable e) {
                         throw new IOException(e);
                     } finally {
@@ -4261,7 +4336,19 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
                 }
             });
         } else {
-            region.mutateRowsWithLocks(mutations, rowsToLock, nonceGroup, nonce);
+            //region.mutateRowsWithLocks(mutations, rowsToLock, nonceGroup, nonce);
+            CBTMetaDataEndpointImpl.this.mutateRowsOnSystemCatalog(mutations);
+        }
+    }
+
+    private void mutateRowsOnSystemCatalog(Collection<Mutation> mutations) throws IOException {
+        Table systemCatalog = CBTMetaDataEndpointImpl.this.connection.getTable(
+            TableName.valueOf("SYSTEM.CATALOG"));
+        Map<byte[], List<Mutation>> mutatiosnByRow = mutations.stream().collect(Collectors.groupingBy(m -> m.getRow()));
+        for(Map.Entry<byte[], List<Mutation>> e: mutatiosnByRow.entrySet()) {
+            RowMutations rm = new RowMutations(e.getKey());
+            rm.add(e.getValue());
+            ((BigtableTable)systemCatalog).mutateRow(rm);
         }
     }
 
