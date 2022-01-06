@@ -71,7 +71,7 @@
             </ignoredDependencies>
            </configuration>
         </plugin>
-        <plugin>
+<!--        <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-shade-plugin</artifactId>
           <configuration>
@@ -101,7 +101,7 @@
                   <exclude>webapps/**</exclude>
                 </excludes>
               </filter>
-              <!-- Phoenix specific -->
+              &lt;!&ndash; Phoenix specific &ndash;&gt;
               <filter>
                 <artifact>org.apache.commons:commons-math3</artifact>
                 <excludes>
@@ -114,7 +114,7 @@
                   <exclude>hbase-webapps/**</exclude>
                 </excludes>
               </filter>
-              <!-- Phoenix specific -->
+              &lt;!&ndash; Phoenix specific &ndash;&gt;
             </filters>
             <transformers>
               <transformer
@@ -148,31 +148,32 @@
                 <shadedPattern>${shaded.package}.org.</shadedPattern>
                 <excludes>
                   <exclude>org/apache/hadoop/**</exclude>
-                  <!-- Our non-shaded htrace and logging libraries -->
+                  &lt;!&ndash; Our non-shaded htrace and logging libraries &ndash;&gt;
                   <exclude>org/apache/htrace/**</exclude>
                   <exclude>org/slf4j/**</exclude>
                   <exclude>org/apache/commons/logging/**</exclude>
                   <exclude>org/apache/log4j/**</exclude>
-                  <!-- Not the org/ packages that are a part of the jdk -->
+                  &lt;!&ndash; Not the org/ packages that are a part of the jdk &ndash;&gt;
                   <exclude>org/ietf/jgss/**</exclude>
                   <exclude>org/omg/**</exclude>
                   <exclude>org/w3c/dom/**</exclude>
                   <exclude>org/xml/sax/**</exclude>
   
-                  <!-- Extras compared to Hadoop -->
-                  <!-- Hbase classes - Maybe these could be shaded as well ? -->
+                  &lt;!&ndash; Extras compared to Hadoop &ndash;&gt;
+                  &lt;!&ndash; Hbase classes - Maybe these could be shaded as well ? &ndash;&gt;
                   <exclude>org/apache/hbase/**</exclude>
-                  <!-- Phoenix classes -->
+                  &lt;!&ndash; Phoenix classes &ndash;&gt;
                   <exclude>org/apache/phoenix/**</exclude>
                   <exclude>org/apache/omid/**</exclude>
-                  <!-- Do want/need to expose Tephra as well ? -->
+                  &lt;!&ndash; Do want/need to expose Tephra as well ? &ndash;&gt;
                 </excludes>
               </relocation>
               <relocation>
                 <pattern>com/</pattern>
                 <shadedPattern>${shaded.package}.com.</shadedPattern>
                 <excludes>
-                  <!-- Not the com/ packages that are a part of particular jdk implementations -->
+                  <exclude>com/google/**</exclude>
+                  &lt;!&ndash; Not the com/ packages that are a part of particular jdk implementations &ndash;&gt;
                   <exclude>com/sun/tools/**</exclude>
                   <exclude>com/sun/javadoc/**</exclude>
                   <exclude>com/sun/security/**</exclude>
@@ -184,7 +185,7 @@
                 <pattern>io/</pattern>
                 <shadedPattern>${shaded.package}.io.</shadedPattern>
                 <excludes>
-                  <!-- Exclude config keys for Hadoop that look like package names -->
+                  &lt;!&ndash; Exclude config keys for Hadoop that look like package names &ndash;&gt;
                   <exclude>io/compression/**</exclude>
                   <exclude>io/mapfile/**</exclude>
                   <exclude>io/map/index/*</exclude>
@@ -195,7 +196,7 @@
                   <exclude>io/serializations</exclude>
                 </excludes>
               </relocation>
-              <!-- JSRs that haven't made it to inclusion in J2SE -->
+              &lt;!&ndash; JSRs that haven't made it to inclusion in J2SE &ndash;&gt;
               <relocation>
                 <pattern>javax/el/</pattern>
                 <shadedPattern>${shaded.package}.javax.el.</shadedPattern>
@@ -228,18 +229,18 @@
                 <pattern>net/</pattern>
                 <shadedPattern>${shaded.package}.net.</shadedPattern>
                 <excludes>
-                  <!-- Exclude config keys for Hadoop that look like package names -->
+                  &lt;!&ndash; Exclude config keys for Hadoop that look like package names &ndash;&gt;
                   <exclude>net/topology/**</exclude>
                 </excludes>
               </relocation>
-              <!-- okio declares a top level package instead of nested -->
+              &lt;!&ndash; okio declares a top level package instead of nested &ndash;&gt;
               <relocation>
                 <pattern>okio/</pattern>
                 <shadedPattern>${shaded.package}.okio.</shadedPattern>
               </relocation>
-              <!-- Phoenix specific relocations -->
+              &lt;!&ndash; Phoenix specific relocations &ndash;&gt;
               <relocation>
-                <!-- Tephra -->
+                &lt;!&ndash; Tephra &ndash;&gt;
                 <pattern>co/</pattern>
                 <shadedPattern>${shaded.package}.co.</shadedPattern>
               </relocation>
@@ -267,10 +268,10 @@
                 <pattern>tables/</pattern>
                 <shadedPattern>${shaded.package}.tables.</shadedPattern>
               </relocation>
-              <!-- Phoenix specific relocations end -->
+              &lt;!&ndash; Phoenix specific relocations end &ndash;&gt;
             </relocations>
           </configuration>
-        </plugin>
+        </plugin>-->
       </plugins>
     </pluginManagement>
   </build>

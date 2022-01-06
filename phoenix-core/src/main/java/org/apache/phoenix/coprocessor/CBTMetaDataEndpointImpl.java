@@ -3193,7 +3193,7 @@ TABLE_FAMILY_BYTES, TABLE_SEQ_NUM_BYTES);
         Region region = BigTableConnectionFactory.getFakeRegion();
         final byte[] key = SchemaUtil.getTableKey(tenantId, schemaName, tableName);
         // if this region doesn't contain the metadata rows then fail
-        if (region != null && !region.getRegionInfo().containsRow(key)) {
+        if (false && region != null && !region.getRegionInfo().containsRow(key)) {
             throw new SQLExceptionInfo.Builder(SQLExceptionCode.GET_TABLE_ERROR)
                     .setSchemaName(Bytes.toString(schemaName))
                     .setTableName(Bytes.toString(tableName)).build().buildException();

@@ -40,6 +40,16 @@ public class JdbcTest extends TestCase {
     con.commit();
 
   }
+  public void testInsertIntoPopulation() throws SQLException {
+    Connection con = getJDBCConnection();
+    String query = "upsert into us_city_population(city, population) values ('Seattle', 200)";
+    //+ "upsert into us_population(state, city, population) values ('WA', 'Washington', 2)";
+    try (Statement createStm = con.createStatement()) {
+      createStm.execute(query);
+    }
+    con.commit();
+
+  }
 
   private org.apache.hadoop.hbase.client.Connection createHBaseConnection() throws IOException {
     Configuration hBaseConfig = HBaseConfiguration.create();
@@ -50,7 +60,7 @@ public class JdbcTest extends TestCase {
 
   private org.apache.hadoop.hbase.client.Connection createCbtConnection() {
     return BigtableConfiguration.connect(System.getenv("GCP_PROJECT_ID"),
-        System.getenv("GCP_INSTANCE_ID") );
+        System.getenv("GCP_INSTANCE_ID"));
   }
 
   private org.apache.hadoop.hbase.client.Connection createRawConnection() throws IOException {
@@ -74,7 +84,7 @@ public class JdbcTest extends TestCase {
     }
   }
 
-  private static final char[] HEX_ARRAY = "0123456789ABCDEF" .toCharArray();
+  private static final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
 
   public static String bytesToHex(byte[] bytes, int start, int length) {
     char[] hexChars = new char[length * 2];
@@ -84,6 +94,23 @@ public class JdbcTest extends TestCase {
       hexChars[(j - start) * 2 + 1] = HEX_ARRAY[v & 0x0F];
     }
     return new String(hexChars);
+  }
+
+  public void testJoin() throws SQLException {
+    Connection con = getJDBCConnection();
+    String query =
+        "select a.city, b.population from US_POPULATION4 a inner join us_city_population b on\n"
+            + "    a.state = b.city\n"
+            + "    order by a.state";
+    try (Statement stmt = con.createStatement()) {
+      ResultSet rs = stmt.executeQuery(query);
+      while (rs.next()) {
+        String city = rs.getString("a.city");
+        int population = rs.getInt("b.population");
+        System.out.println(city + " " + population);
+      }
+    }
+
   }
 
   public void testSelect() throws SQLException {
@@ -112,11 +139,22 @@ public class JdbcTest extends TestCase {
     }
   }
 
+  public void testCreatePopulationTable() throws SQLException {
+    Connection con = getJDBCConnection();
+    String createQuery = "CREATE TABLE IF NOT EXISTS us_city_population (\n"
+        + "    city VARCHAR NOT NULL,\n"
+        + "    population BIGINT\n"
+        + "    CONSTRAINT my_pk PRIMARY KEY (city))";
+    try (Statement createStm = con.createStatement()) {
+      createStm.execute(createQuery);
+    }
+  }
+
   public Connection getJDBCConnection() throws SQLException {
     Properties connectionProps = new Properties();
     Connection conn = DriverManager.getConnection(System.getenv("IS_CBT") != null ?
-        "jdbc:phoenix:localhost:2181:/google" :
-        "jdbc:phoenix:localhost:2181:/hbase",
+            "google" :
+            "jdbc:phoenix:localhost:2181:/hbase",
         connectionProps);
     System.out.println("Connected to database");
     return conn;
